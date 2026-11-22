@@ -1,0 +1,13 @@
+--- models_hy_v4_nvidia_dfly_speculator.py.orig	2026-11-22 15:06:20.254381785 +0900
++++ models_hy_v4_nvidia_dfly_speculator.py	2026-11-22 15:06:20.263381814 +0900
+@@ -115,7 +115,9 @@
+                 "DFly draft and target must use the same MLA KV cache dtype; "
+                 "omit speculative_config.kv_cache_dtype to inherit the target"
+             )
+-        if vllm_config.kv_transfer_config is not None:
++        kvt = vllm_config.kv_transfer_config
++        # Local (single-engine) KV connectors are not P/D disaggregation.
++        if kvt is not None and kvt.kv_connector not in ("HiSparseConnector", "OffloadingConnector", "SimpleCPUOffloadConnector", "MultiConnector"):
+             raise ValueError("DFly does not support PD disaggregation")
+         if (
+             vllm_config.lora_config is not None

@@ -1,11 +1,8 @@
 name: build
 
+# Manual only: the base image is ~36 GB, larger than a standard hosted
+# runner's free disk. Run on a self-hosted or large runner.
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:

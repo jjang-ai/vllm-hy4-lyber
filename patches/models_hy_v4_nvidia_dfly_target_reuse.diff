@@ -1,0 +1,12 @@
+--- models_hy_v4_nvidia_dfly_target_reuse.py.orig	2026-11-22 15:06:20.255381788 +0900
++++ models_hy_v4_nvidia_dfly_target_reuse.py	2026-11-22 15:06:20.263381814 +0900
+@@ -92,6 +92,9 @@
+                 raise ValueError("DFly target backend must apply its learnable sink")
+             self.layer_pairs.append((source, dest))
+             self.aliases[dest.mla_attn.layer_name] = source.mla_attn.layer_name
++            # Persistent alias for KV connectors that rebind caches after the
++            # temporary kv_sharing alias has been cleared (e.g. HiSparse).
++            dest.mla_attn.dfly_kv_target_layer_name = source.mla_attn.layer_name
+         if len(set(self.aliases.values())) != len(self.aliases):
+             raise ValueError("DFly needs a distinct target KV layer per draft layer")
+         # One stacked snapshot buffer, so one launch builds every draft layer's

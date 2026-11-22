@@ -1,0 +1,26 @@
+--- v1_hisparse_binding.py.orig	2026-11-22 15:06:20.256381791 +0900
++++ v1_hisparse_binding.py	2026-11-22 15:06:20.263381814 +0900
+@@ -267,9 +267,12 @@
+     binds them to their target's resident, hot and host buffers."""
+     readers: defaultdict[str, list[HiSparseCacheHandle]] = defaultdict(list)
+     for layer in forward_context.values():
+-        target = getattr(layer, "kv_sharing_target_layer_name", None)
++        target = getattr(layer, "kv_sharing_target_layer_name", None) or getattr(
++            layer, "dfly_kv_target_layer_name", None
++        )
+         cache = getattr(layer, "hisparse_cache", None)
+         if target is not None and cache is not None:
++            cache.draft_layer = bool(getattr(layer, "is_draft_layer", False))
+             readers[target].append(cache)
+     return readers
+ 
+@@ -402,8 +405,8 @@
+                         "HiSparse sparse GQA requires unpadded, "
+                         "contiguous token rows in the host KV cache."
+                     ) from error
++            cache_handle.draft_layer = forward_context[layer_name].is_draft_layer
+             for handle in (cache_handle, *readers):
+-                handle.draft_layer = forward_context[layer_name].is_draft_layer
+                 handle.runtime.host_pool = host_pool
+                 handle.runtime.bind_source_cache(
+                     source_cache,
