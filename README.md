@@ -5,8 +5,11 @@ A pinned vLLM runtime image for **Hy4-flash** checkpoints in compressed-tensors
 CPU/GPU KV-cache offloading, plus image input and tool calling.
 
 Upstream vLLM nightly already loads these checkpoints natively. This image adds
-four small patches so that DFly and local KV connectors can be used at the same
-time. Upstream currently rejects that combination.
+two things on top:
+
+- small patches so that DFly and local KV connectors can be used at the same time,
+  a combination upstream currently rejects;
+- bit-exact fused decode kernels, which make decode about 1.9× faster.
 
 **Status:** used in production; upstream PRs pending. Once the patches land
 upstream, a plain upstream image replaces this one.
@@ -16,17 +19,18 @@ upstream, a plain upstream image replaces this one.
 | | |
 |---|---|
 | Base | `vllm/vllm-openai:nightly-f8b29fab414884206460fe63b983ca34fc6e3e9b` (2026-11-21) |
-| Tag | `ghcr.io/jjang-ai/vllm-hy4-lyber:n1` |
+| Tag | `ghcr.io/jjang-ai/vllm-hy4-lyber:opt2` |
 | MoE kernel | CUTLASS MXFP4 (`CutlassExpertsMxfp4`), selected automatically |
-| Hardware | NVIDIA Blackwell (B200/B300); validated on 8×B300 as 2 × TP4 replicas |
+| Hardware | NVIDIA Blackwell (B200/B300); validated on 8×B300 as 4 × TP2 and 2 × TP4 replicas |
 
 ```bash
-docker build -t ghcr.io/jjang-ai/vllm-hy4-lyber:n1 .
+docker build -t ghcr.io/jjang-ai/vllm-hy4-lyber:opt2 .
 ```
 
 ## Patches
 
-All four are in `patches/`, as a `.diff` against the base plus the resulting file.
+All patches are in `patches/`. Each modified file is included in full, and patches 1–4
+are also provided as a `.diff` against the base.
 
 1. **`hy_v4_flash/nvidia/model.py`**: `validate_runtime` accepted only
    `HiSparseConnector`. This patch also allows the other single-engine KV
@@ -48,15 +52,44 @@ All four are in `patches/`, as a `.diff` against the base plus the resulting fil
    - Without patches 3 and 4, HiSparse with DFly fails in warmup with
      `AssertionError` (`self.view is not None`) in `hisparse/runtime.py`.
 
+### 5. Bit-exact decode fusions (`patches/decode_exact_fusion.diff`)
+
+vLLM's HY4-Flash model does not support `torch.compile`. With compilation enabled,
+vLLM's CustomOp dispatch still picks the PyTorch-native RMSNorm and M-RoPE, expecting
+the compiler to fuse them. Nothing fuses, so each decode step launches about 10,600
+small kernels per token. This patch replaces the hot paths with Triton kernels that
+reproduce PyTorch's rounding exactly:
+
+- RMSNorm, including PyTorch's summation order for the mean
+- M-RoPE
+- the IndexPool rotate and FWHT quantize step
+- index select/expand and pool writes
+- the SWA window indexer
+- Engram
+- cached padded attention sinks
+
+Greedy output, both tokens and logprobs, is bit-identical to the unpatched image.
+Kernels per token drop from about 10,600 to about 4,200.
+
+Each fusion can be switched off with `VLLM_HY4_FUSE_SKIP=<name>`.
+`VLLM_HY4_EXACT_FUSION=0` disables them all.
+
+| per replica, DFly 3 | TP4 before | TP4 after | TP2 after |
+|---|---:|---:|---:|
+| single stream tok/s | 79 | 151–185 | 149 |
+| aggregate tok/s at 64 concurrent | 2,143 | 3,550–3,723 | 3,572 |
+
 ## Serving
 
-Use **two TP4 replicas per 8-GPU node** rather than one TP8 replica. At TP4 the
-CUTLASS MXFP4 scale layout lines up, and two replicas give higher total
-concurrency.
+Use **four TP2 replicas per 8-GPU node**. Decode here is limited by per-step overhead
+rather than compute or bandwidth, so a TP2 replica is about as fast as a TP4 one, and
+four replicas give about twice the node capacity of two. Both FP8 and FP8 + MXFP4
+checkpoints fit at TP2.
 
 ```bash
-MODEL=/path/to/checkpoint GPUS=0,1,2,3 PORT=8016 NAME=hy4-a ./serve.sh
-MODEL=/path/to/checkpoint GPUS=4,5,6,7 PORT=8017 NAME=hy4-b ./serve.sh
+for i in 0 1 2 3; do
+  MODEL=/path/to/checkpoint TP=2 GPUS=$((2*i)),$((2*i+1)) PORT=$((8016+i)) NAME=hy4-$i ./serve.sh
+done
 ```
 
 `serve.sh` settings:

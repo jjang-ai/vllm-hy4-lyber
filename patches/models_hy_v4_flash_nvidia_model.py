@@ -84,6 +84,39 @@ def validate_runtime(vllm_config: VllmConfig) -> None:
         )
 
 
+class ExactNativeRMSNorm(RMSNorm):
+    """RMSNorm whose native (uncompiled) path runs as sq -> mean -> epilogue.
+
+    Bit-identical to vllm.ir's native rms_norm; installed only when that native
+    implementation is the one the IR priority would dispatch to.
+    """
+
+    def forward(self, x, residual=None):
+        from . import fused_ops
+
+        if residual is None and fused_ops.exact_rms_supported(
+            x, self.weight if self.pass_weight else None, self.variance_size_override
+        ):
+            return fused_ops.exact_rms_norm(x, self.weight.data, self.variance_epsilon)
+        return super().forward(x, residual)
+
+
+def _install_exact_norms(module: nn.Module) -> None:
+    import vllm.envs as envs
+    from vllm.config import get_current_vllm_config
+
+    from . import fused_ops
+
+    if not fused_ops.ENABLED or envs.VLLM_BATCH_INVARIANT:
+        return
+    priority = get_current_vllm_config().kernel_config.ir_op_priority.rms_norm
+    if not priority or priority[0] != "native":
+        return
+    for m in module.modules():
+        if type(m) is RMSNorm and m.has_weight:
+            m.__class__ = ExactNativeRMSNorm
+
+
 class HYV4FlashDecoderLayer(HYV4DecoderLayer):
     def __init__(
         self,
@@ -149,6 +182,7 @@ class HYV4FlashModel(HYV4Model):
         self.token_lookback_depth = (
             self.config.engram_max_ngram_size - 1 if self.engram_hash is not None else 0
         )
+        _install_exact_norms(self)
 
     def forward(
         self,

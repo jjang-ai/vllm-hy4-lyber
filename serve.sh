@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# Launch one Hy4-flash replica (TP4). On an 8-GPU node run two replicas:
-#   GPUS=0,1,2,3 PORT=8016 NAME=hy4-a ./serve.sh
-#   GPUS=4,5,6,7 PORT=8017 NAME=hy4-b ./serve.sh
+# Launch one Hy4-flash replica (default TP2). On an 8-GPU node run four replicas:
+#   GPUS=0,1 PORT=8016 NAME=hy4-0 ./serve.sh   (… GPUS=6,7 PORT=8019 NAME=hy4-3)
 #
 # KV memory modes (KV=...):
 #   offload:<GiB>   GPU-resident KV + CPU LRU prefix tier (default, offload:400)
 #   hisparse:<GiB>  HiSparse: GPU hot window + host-resident KV (very long contexts)
 #   none            GPU only
 set -euo pipefail
+TP="${TP:-2}"
 
 MODEL="${MODEL:?set MODEL=/path/to/checkpoint}"
+QUANT="${QUANT---quantization compressed-tensors}"   # QUANT= for native FP8 checkpoints
 NAME="${NAME:-hy4}"
-GPUS="${GPUS:-0,1,2,3}"
+GPUS="${GPUS:-0,1}"
 PORT="${PORT:-8000}"
-IMAGE="${IMAGE:-ghcr.io/jjang-ai/vllm-hy4-lyber:n1}"
+IMAGE="${IMAGE:-ghcr.io/jjang-ai/vllm-hy4-lyber:opt2}"
 KV="${KV:-offload:400}"
 NSPEC="${NSPEC:-3}"            # DFly draft tokens; 0 disables DFly
 MAXLEN="${MAXLEN:-131072}"     # model supports up to 1048576
@@ -43,8 +44,8 @@ docker run -d --name "$NAME" --gpus "\"device=${GPUS}\"" --ipc=host --network ho
   -v "${MODEL}:/model:ro" -v "${CACHE}:/root/.cache" \
   "$IMAGE" \
   --model /model --served-model-name hy4-flash \
-  --dtype bfloat16 --quantization compressed-tensors \
-  --tensor-parallel-size 4 --gpu-memory-utilization 0.92 \
+  --dtype bfloat16 $QUANT \
+  --tensor-parallel-size "$TP" --gpu-memory-utilization 0.92 \
   --max-model-len "$MAXLEN" --max-num-seqs "$MAXSEQS" \
   "${SPEC_FLAGS[@]}" "${KV_FLAGS[@]}" \
   --limit-mm-per-prompt '{"image":8,"video":0}' \
