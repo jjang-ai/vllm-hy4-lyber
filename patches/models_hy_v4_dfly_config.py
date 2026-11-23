@@ -215,13 +215,20 @@ class HYV4DFlySpeculatorConfig(DFlySpeculatorConfig):
 
     @classmethod
     def verify_target_parallel_config(cls, spec: "SpeculativeConfig") -> None:
-        for field in (
-            "pipeline_parallel_size",
-            "prefill_context_parallel_size",
-            "decode_context_parallel_size",
-        ):
-            if getattr(spec.target_parallel_config, field) != 1:
+        parallel = spec.target_parallel_config
+        for field in ("pipeline_parallel_size", "prefill_context_parallel_size"):
+            if getattr(parallel, field) != 1:
                 raise ValueError(f"DFly requires {field}=1")
+        # The draft layers write their query block into the target's MLA KV
+        # pages, so under DCP they must shard that KV exactly like the target
+        # (owner-rank, rank-local slots; see write_dfly_query_slots).
+        dcp = parallel.decode_context_parallel_size
+        draft_dcp = spec.draft_decode_context_parallel_size
+        if dcp > 1 and draft_dcp not in (None, dcp):
+            raise ValueError(
+                "DFly requires draft_decode_context_parallel_size to equal "
+                f"decode_context_parallel_size ({dcp})"
+            )
 
     @classmethod
     def draft_hf_overrides(

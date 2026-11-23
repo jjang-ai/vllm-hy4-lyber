@@ -179,6 +179,17 @@ With TP8 the MLA KV cache is replicated on every GPU (~54 KB/token per copy, so 
 | Needle (70K / 281K / 633K × 3 depths) | — | 9 / 9 |
 | MMLU-570 `no_think` | 89.65 | 88.6 |
 
+**DFly with DCP (patches 9–10, pending GPU validation):** the DFly draft wrote its 6-token block's KV with a
+slot kernel that ignored DCP: on every rank, at the non-DCP slot, indexing block-table columns past the request's
+allocated blocks. Under DCP that both starved the draft (it read stale KV, acceptance 1–2) and could write draft KV
+into blocks owned by other requests or cached prefixes. Patch 9 (`dfly_inputs.py`, `dfly_speculator.py`,
+`dfly_config.py`) writes on the owner rank only, at the rank-local slot, bounded by allocated blocks, and lets DFly run
+when the draft's DCP equals the target's. Patch 10 (`flashmla_sparse.py`) fixes the sink under DCP: FlashMLA applies
+the sink to each shard's output but not to its LSE, so 8 shards counted it 8 times; now the kernels run sink-free and
+DCP rank 0 adds it once to both output and LSE. CPU-only slot test: `tests/test_dfly_dcp_slots.py` (0 mismatches vs
+the target layout for DCP 1/4/8, interleave 1/4/16/64). **Not yet run on GPUs — do not enable DCP+DFly in production
+until the GPU checks in the PR pass.** Until then:
+
 DFly stays off with DCP: its draft is TP-local and reuses the target's sparse indices, which under DCP are already
 rank-local, so acceptance falls to ~1–2 and decoding gets slower (DCP 8 + DFly 5: 49 tok/s, 739 tok/s at 32
 concurrent; output still correct because the target verifies every token). A CPU tier also adds little under DCP 8:
