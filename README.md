@@ -112,6 +112,24 @@ Needle retrieval at 500K and 980K, image input, and 1M-token multi-turn recall m
 Aggregate throughput at 96 concurrent 8K-context users was about 12% lower with FP8 KV
 (measured with Engram offloaded to CPU).
 
+### 7. CPU offload tier alignment (`patches/distributed_kv_transfer_kv_connector_v1_offloading_state.py`)
+
+With the native CPU tier (`--kv-offloading-size`), Hy4-flash never got a CPU prefix
+hit: `vllm:external_prefix_cache_hits_total` stayed at 0 while stores ran.
+
+`SchedulerOffloadConfig.from_spec` sets `alignment_tokens` only when every
+full-attention group uses one chunk size. Hy4-flash has two: the IndexPool group at
+256 tokens per chunk and the MLA group at 64. Without an alignment, every
+sliding-window block is stored, about 4.25 chunks per 64 tokens. A 400 GiB tier then
+held about 6.4M tokens, fewer than the 8.65M-token GPU cache, so anything evicted
+from GPU had already left the CPU tier.
+
+The patch uses the least common multiple of the full-attention chunk sizes as the
+alignment. Sliding-window groups then store only the tail at the prompt end, as
+the GPU cache does. The same tier holds about 21.8M tokens. With the GPU prefix
+cache cleared, a 400K-token prompt restored from CPU in 1.0 s instead of 21 s, with
+the same answer and `cached_tokens` equal to the restored prefix.
+
 ## Serving
 
 Use **four TP2 replicas per 8-GPU node**. Decode here is limited by per-step overhead
