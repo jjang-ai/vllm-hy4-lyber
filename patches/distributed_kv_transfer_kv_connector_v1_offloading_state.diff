@@ -1,0 +1,23 @@
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/offloading/state.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/offloading/state.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++import math
+ from dataclasses import dataclass, field
+ from typing import NamedTuple
+ 
+@@ -150,6 +151,13 @@
+         alignment_tokens: int | None = None
+         if len(full_attn_tokens_per_chunk) == 1:
+             alignment_tokens = full_attn_tokens_per_chunk.pop()
++        elif len(full_attn_tokens_per_chunk) > 1:
++            # Full-attention groups with different chunk sizes (e.g. an
++            # IndexPool indexer at 4 tokens/state next to a per-token MLA
++            # group) can only hit together at a common multiple. Without an
++            # alignment, SWA groups are stored densely (every block), which
++            # can make the CPU tier hold fewer tokens than the GPU cache.
++            alignment_tokens = math.lcm(*full_attn_tokens_per_chunk)
+         elif not full_attn_tokens_per_chunk:
+             all_tokens_per_chunk = [
+                 tpb * spec.blocks_per_chunk for tpb in spec.tokens_per_block
