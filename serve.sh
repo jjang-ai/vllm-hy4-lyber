@@ -17,6 +17,7 @@ PORT="${PORT:-8000}"
 IMAGE="${IMAGE:-ghcr.io/jjang-ai/vllm-hy4-lyber:opt2}"
 KV="${KV:-offload:400}"
 NSPEC="${NSPEC:-3}"            # DFly draft tokens; 0 disables DFly
+KVDTYPE="${KVDTYPE:-fp8_ds_mla}"  # KV cache dtype; auto = BF16 (about 2.6x less KV capacity)
 MAXLEN="${MAXLEN:-131072}"     # model supports up to 1048576
 MAXSEQS="${MAXSEQS:-256}"
 HSBUF="${HSBUF:-11008}"        # HiSparse hot rows per request; >= (NSPEC+1)*2176, 256-aligned
@@ -33,6 +34,10 @@ case "$KV" in
   *) echo "unknown KV mode: $KV" >&2; exit 1 ;;
 esac
 
+KVD_FLAGS=(--kv-cache-dtype "$KVDTYPE")
+# FP8 sparse FlashMLA kernels read 64-token blocks; the packed BLHNC layout cannot split larger ones.
+[ "$KVDTYPE" = auto ] || KVD_FLAGS+=(--block-size 64)
+
 SPEC_FLAGS=()
 if [ "$NSPEC" != "0" ]; then
   SPEC_FLAGS=(--speculative-config "{\"method\":\"dfly\",\"num_speculative_tokens\":${NSPEC},\"draft_sample_method\":\"probabilistic\"}")
@@ -47,9 +52,9 @@ docker run -d --name "$NAME" --gpus "\"device=${GPUS}\"" --ipc=host --network ho
   --dtype bfloat16 $QUANT \
   --tensor-parallel-size "$TP" --gpu-memory-utilization 0.92 \
   --max-model-len "$MAXLEN" --max-num-seqs "$MAXSEQS" \
-  "${SPEC_FLAGS[@]}" "${KV_FLAGS[@]}" \
+  "${KVD_FLAGS[@]}" "${SPEC_FLAGS[@]}" "${KV_FLAGS[@]}" \
   --limit-mm-per-prompt '{"image":8,"video":0}' \
   --reasoning-parser hy_v4 --tool-call-parser hy_v4 --enable-auto-tool-choice \
   --engram-config '{"cpu_offload":false}' \
   --host 0.0.0.0 --port "$PORT"
-echo "started $NAME on GPUs $GPUS port $PORT (KV=$KV, DFly=$NSPEC)"
+echo "started $NAME on GPUs $GPUS port $PORT (KV=$KV, KV dtype=$KVDTYPE, DFly=$NSPEC)"

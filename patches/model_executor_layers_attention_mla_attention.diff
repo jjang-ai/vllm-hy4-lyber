@@ -1,0 +1,36 @@
+--- a/vllm/model_executor/layers/attention/mla_attention.py
++++ b/vllm/model_executor/layers/attention/mla_attention.py
+@@ -513,7 +513,12 @@
+             from vllm.model_executor.models.utils import extract_layer_index
+ 
+             layer_idx = extract_layer_index(prefix)
+-            if str(layer_idx) in cache_config.kv_cache_dtype_skip_layers:
++            # Only sliding-window layers keep the native dtype: DFly draft layers
++            # share full-context target KV and must match its quantized format.
++            if (
++                sliding_window is not None
++                and str(layer_idx) in cache_config.kv_cache_dtype_skip_layers
++            ):
+                 kv_cache_dtype = "auto"
+             logger.debug(
+                 "Layer %s: kv_cache_dtype=%s",
+@@ -521,9 +526,16 @@
+                 kv_cache_dtype,
+             )
+ 
+-        if sliding_window is not None and kv_cache_dtype in (
+-            "fp8_ds_mla",
+-            "nvfp4_ds_mla",
++        # Backends that index the window themselves through the sparse kernel
++        # (HY4 Flash SWA) read the same quantized pages as full layers.
++        if (
++            sliding_window is not None
++            and kv_cache_dtype in ("fp8_ds_mla", "nvfp4_ds_mla")
++            and not (
++                attn_backend is not None
++                and attn_backend.supports_sliding_window()
++                and attn_backend.get_name() == "FLASHMLA_SPARSE"
++            )
+         ):
+             raise ValueError(
+                 f"Sliding-window MLA does not support kv_cache_dtype={kv_cache_dtype}."

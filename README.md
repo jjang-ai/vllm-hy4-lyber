@@ -79,6 +79,39 @@ Each fusion can be switched off with `VLLM_HY4_FUSE_SKIP=<name>`.
 | single stream tok/s | 79 | 151–185 | 149 |
 | aggregate tok/s at 64 concurrent | 2,143 | 3,550–3,723 | 3,572 |
 
+### 6. FP8 KV cache on every layer (`patches/model_executor_layers_attention_mla_attention.py`)
+
+Hy4-flash keeps a full-length cache in only 12 of its 42 layers; the other 30 hold a
+512-token sliding window. With BF16 KV (`--kv-cache-dtype auto`) a TP2 replica on B300
+holds about 5.7M tokens. With `--kv-cache-dtype fp8_ds_mla` it holds about 8.6M (Engram
+on GPU) or 14.6M (Engram on CPU).
+
+Upstream rejects quantized KV on sliding-window MLA layers. Hy4-flash runs those layers
+through the same sparse FlashMLA kernel as the full layers, using window indices
+(`FlashSWABackend`), so they read the same `fp8_ds_mla` pages. The patch:
+
+- allows `fp8_ds_mla`/`nvfp4_ds_mla` on sliding-window layers when the backend is
+  `FLASHMLA_SPARSE` and supports sliding windows;
+- applies `kv_cache_dtype_skip_layers` only to sliding-window layers, so DFly draft
+  layers, which share target KV, keep the target's format.
+
+FP8 sparse FlashMLA reads 64-token kernel blocks, so `serve.sh` adds `--block-size 64`.
+Mixing BF16 sliding-window layers with FP8 full layers through the skip list is not
+used: page padding forces 512-token blocks, which the packed BLHNC layout cannot split.
+
+Measured on one TP2 replica (B300, Engram on GPU, DFly 3):
+
+| | BF16 KV | FP8 KV |
+|---|---:|---:|
+| KV tokens | 5.71M | 8.65M |
+| 1M-token requests at once | 5.4 | 8.3 |
+| single stream tok/s (6 fixed prompts) | 193 | 184 |
+| DFly acceptance, same prompts | 43.0% | 42.5% |
+
+Needle retrieval at 500K and 980K, image input, and 1M-token multi-turn recall matched BF16.
+Aggregate throughput at 96 concurrent 8K-context users was about 12% lower with FP8 KV
+(measured with Engram offloaded to CPU).
+
 ## Serving
 
 Use **four TP2 replicas per 8-GPU node**. Decode here is limited by per-step overhead
