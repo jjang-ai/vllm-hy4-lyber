@@ -18,6 +18,8 @@ BIND="${BIND:-127.0.0.1}"            # publish on loopback; front it with a tunn
 SERVED="${SERVED:-hy4-big}"           # space-separated served model names
 IMAGE="${IMAGE:-ghcr.io/jjang-ai/vllm-hy4-lyber:opt4}"
 NSPEC="${NSPEC:-5}"                   # DFly draft tokens (Tencent's setting); 0 disables DFly
+DCP="${DCP:-1}"                       # decode context parallel size (8 = shard the MLA KV across all GPUs: ~7.5x GPU KV;
+                                      # DFly is turned off with DCP: its draft is TP-local and drafts poorly on sharded KV)
 OFFLOAD="${OFFLOAD:-480}"             # CPU tier GiB (pinned). Keep it above the GPU KV pool (~180 GiB/rank FP8) or it adds
                                       # nothing, and well below free RAM: 960 GiB on a 2 TB host caused reclaim stalls. 0 = GPU only
 KVDTYPE="${KVDTYPE:-fp8_ds_mla}"      # auto = BF16 KV (about 1.7x fewer GPU KV tokens)
@@ -33,6 +35,7 @@ mkdir -p "$CACHE"
 KV_FLAGS=(--kv-cache-dtype "$KVDTYPE")
 [ "$KVDTYPE" = auto ] || KV_FLAGS+=(--block-size 64)   # FP8 sparse FlashMLA reads 64-token blocks
 [ "$OFFLOAD" = 0 ] || KV_FLAGS+=(--kv-offloading-size "$OFFLOAD" --kv-offloading-backend native)
+if [ "$DCP" != 1 ]; then NSPEC=0; KV_FLAGS+=(--decode-context-parallel-size "$DCP"); fi
 SPEC_FLAGS=()
 [ "$NSPEC" = 0 ] || SPEC_FLAGS=(--speculative-config "{\"method\":\"dfly\",\"num_speculative_tokens\":${NSPEC}}")
 ENV_FLAGS=(-e VLLM_USE_RUST_FRONTEND=1 -e VLLM_ENGINE_READY_TIMEOUT_S=3600 -e HY4_NVFP4_PER_TOKEN="$NVFP4_PER_TOKEN")

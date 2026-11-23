@@ -160,6 +160,30 @@ Validated on 8×B300 (production worker, November 23 2026):
 | CPU tier (480 GiB) | 247K-token prompt: cold 8.5 s → GPU hit 0.18 s → after 4.7M tokens of other prompts evicted it from the GPU, 0.73 s with 247,488 tokens restored from CPU; same with an image in the prompt |
 | MMLU-570 `no_think` (FP8 KV) | 89.65 |
 
+### Decode context parallelism (more 1M contexts on the GPUs)
+
+With TP8 the MLA KV cache is replicated on every GPU (~54 KB/token per copy, so 1M tokens ≈ 56 GB on each GPU).
+`DCP=8 ./serve-hy4-big.sh` shards it across the 8 GPUs instead. Patch 8 below makes that work for Hy4:
+
+8. **`hy_v4/nvidia/flashmla_sparse.py`**: under DCP the MLA layer all-gathers the query heads across the DCP group
+   before the sparse kernel, but Hy4's learnable attention sinks were only gathered for shard-Q, so start-up failed
+   with "sink head count must match the runtime query layout: sinks=8, full_sinks=None, query_heads=64". The sinks are
+   now all-gathered over the DCP group in the same rank order.
+
+| 8×B300, NVFP4, FP8 KV | TP8 + DFly 5 + CPU tier | TP8 + DCP 8 (no DFly) |
+|---|---:|---:|
+| GPU KV tokens (full 1M contexts) | 3,586,880 (3.4) | 27,032,576 (25.8) |
+| Single stream decode | 130 tok/s | 53 tok/s |
+| 32 concurrent, aggregate | 1,502 tok/s | 1,064 tok/s |
+| Prefill 25K / 104K | 26.7K / 22.0K tok/s | 10.0K / 10.1K tok/s |
+| Needle (70K / 281K / 633K × 3 depths) | — | 9 / 9 |
+| MMLU-570 `no_think` | 89.65 | 88.6 |
+
+DFly stays off with DCP: its draft is TP-local and reuses the target's sparse indices, which under DCP are already
+rank-local, so acceptance falls to ~1–2 and decoding gets slower (DCP 8 + DFly 5: 49 tok/s, 739 tok/s at 32
+concurrent; output still correct because the target verifies every token). A CPU tier also adds little under DCP 8:
+the GPU pool (~1.45 TB of KV) is larger than the RAM a tier can pin on a 2 TB host.
+
 **Size the CPU tier to the host.** It is pinned at start. On a 2 TB host a 960 GiB tier
 next to ~1.2 TB of checkpoint page cache drove the kernel into memory-reclaim stalls
 (PSI "full" ~45%, multi-minute engine steps). 480 GiB plus a page-cache drop before

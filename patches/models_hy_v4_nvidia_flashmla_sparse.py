@@ -123,11 +123,15 @@ class HYV4FlashMLASparseImpl(FlashMLASparseImpl):
     def process_weights_after_loading(self, act_dtype: torch.dtype) -> None:
         super().process_weights_after_loading(act_dtype)
         self._hy4_padded_sinks = None
-        if self.sinks is None or not self.use_shardq:
+        dcp = getattr(self, "dcp_world_size", 1) > 1
+        if self.sinks is None or not (self.use_shardq or dcp):
             return
-        from vllm.distributed import get_tp_group
+        from vllm.distributed import get_dcp_group, get_tp_group
 
-        tp_group = get_tp_group()
+        # HY4 runtime patch: under decode context parallelism the MLA layer all-gathers the query heads across the
+        # DCP group before the sparse kernel, so the sink must cover the same gathered head layout (DCP rank order).
+        # Shard-Q keeps gathering over the TP group as before.
+        tp_group = get_tp_group() if self.use_shardq else get_dcp_group()
         full = tp_group.all_gather(self.sinks.to(tp_group.device), dim=0)
         # Reload in place to preserve pointers held by captured CUDA graphs.
         if self._sinks_full is None:
