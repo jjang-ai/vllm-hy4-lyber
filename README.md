@@ -131,6 +131,40 @@ cache cleared, a 400K-token prompt restored from CPU in 1.0 s instead of 21 s, w
 the same answer and `cached_tokens` equal to the restored prefix.
 
 
+
+## Hy4 (big): NVFP4 routed experts
+
+The same image also serves the large Hy4 (`hy_v4`) on one 8-GPU node, including
+[`lyber-ai/Hy4-UNCENSORED-NVFP4`](https://huggingface.co/lyber-ai/Hy4-UNCENSORED-NVFP4)
+(compressed-tensors, NVFP4 routed experts, everything else FP8/BF16). Two more
+patches, both inert for other checkpoints:
+
+6. **`hy_v4/dfly_config.py`**: DFly's checkpoint check accepted only FP8 and MXFP4
+   targets. It now also accepts a compressed-tensors `nvfp4-pack-quantized`
+   routed-expert group (weights 4-bit float, tensor_group 16; activations none or NVFP4).
+7. **`compressed_tensors_moe.py`**: with `HY4_NVFP4_PER_TOKEN=1`, NVFP4 MoE runs W4A4
+   with a per-token dynamic activation scale (`kNvfp4DynamicToken`, FlashInfer
+   TRT-LLM kernel), so no static calibrated activation scales are used. Off by default.
+
+Launch with `serve-hy4-big.sh` (TP8, 1M context, FP8 KV, DFly 5, CPU LRU prefix tier,
+one image per request, prompt-token cache details, sampling defaults from the checkpoint).
+
+Validated on 8×B300 (production worker, November 23 2026):
+
+| | |
+|---|---|
+| MoE kernel | `TrtLlmNvFp4ExpertsMonolithic [w=nvfp4, a=nvfp4]` |
+| GPU KV (FP8) | 3,586,880 tokens |
+| Single stream / 32 concurrent | 130 tok/s / 1,502 tok/s aggregate |
+| Prefill 25K / 104K tokens | 26.7K / 22.0K tok/s |
+| CPU tier (480 GiB) | 247K-token prompt: cold 8.5 s → GPU hit 0.18 s → after 4.7M tokens of other prompts evicted it from the GPU, 0.73 s with 247,488 tokens restored from CPU; same with an image in the prompt |
+| MMLU-570 `no_think` (FP8 KV) | 89.65 |
+
+**Size the CPU tier to the host.** It is pinned at start. On a 2 TB host a 960 GiB tier
+next to ~1.2 TB of checkpoint page cache drove the kernel into memory-reclaim stalls
+(PSI "full" ~45%, multi-minute engine steps). 480 GiB plus a page-cache drop before
+start (both in `serve-hy4-big.sh`) is stable and still about 2.7× the GPU KV pool.
+
 ## Validated production configuration
 
 On 8×B300 as 4 × TP2 replicas, with `serve.sh` defaults: FP8 KV, 64-token blocks, a 400 GiB CPU tier, DFly with 3 draft tokens, 1M context, and 64 sequences.
