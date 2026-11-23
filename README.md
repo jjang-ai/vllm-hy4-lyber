@@ -131,6 +131,64 @@ cache cleared, a 400K-token prompt restored from CPU in 1.0 s instead of 21 s, w
 the same answer and `cached_tokens` equal to the restored prefix.
 
 
+
+## Hy4 (big): NVFP4 routed experts
+
+The same image also serves the large Hy4 (`hy_v4`) on one 8-GPU node, including
+[`lyber-ai/Hy4-UNCENSORED-NVFP4`](https://huggingface.co/lyber-ai/Hy4-UNCENSORED-NVFP4)
+(compressed-tensors, NVFP4 routed experts, everything else FP8/BF16). Two more
+patches, both inert for other checkpoints:
+
+6. **`hy_v4/dfly_config.py`**: DFly's checkpoint check accepted only FP8 and MXFP4
+   targets. It now also accepts a compressed-tensors `nvfp4-pack-quantized`
+   routed-expert group (weights 4-bit float, tensor_group 16; activations none or NVFP4).
+7. **`compressed_tensors_moe.py`**: with `HY4_NVFP4_PER_TOKEN=1`, NVFP4 MoE runs W4A4
+   with a per-token dynamic activation scale (`kNvfp4DynamicToken`, FlashInfer
+   TRT-LLM kernel), so no static calibrated activation scales are used. Off by default.
+
+Launch with `serve-hy4-big.sh` (TP8, 1M context, FP8 KV, DFly 5, CPU LRU prefix tier,
+one image per request, prompt-token cache details, sampling defaults from the checkpoint).
+
+Validated on 8×B300 (production worker, November 23 2026):
+
+| | |
+|---|---|
+| MoE kernel | `TrtLlmNvFp4ExpertsMonolithic [w=nvfp4, a=nvfp4]` |
+| GPU KV (FP8) | 3,586,880 tokens |
+| Single stream / 32 concurrent | 130 tok/s / 1,502 tok/s aggregate |
+| Prefill 25K / 104K tokens | 26.7K / 22.0K tok/s |
+| CPU tier (480 GiB) | 247K-token prompt: cold 8.5 s → GPU hit 0.18 s → after 4.7M tokens of other prompts evicted it from the GPU, 0.73 s with 247,488 tokens restored from CPU; same with an image in the prompt |
+| MMLU-570 `no_think` (FP8 KV) | 89.65 |
+
+### Decode context parallelism (more 1M contexts on the GPUs)
+
+With TP8 the MLA KV cache is replicated on every GPU (~54 KB/token per copy, so 1M tokens ≈ 56 GB on each GPU).
+`DCP=8 ./serve-hy4-big.sh` shards it across the 8 GPUs instead. Patch 8 below makes that work for Hy4:
+
+8. **`hy_v4/nvidia/flashmla_sparse.py`**: under DCP the MLA layer all-gathers the query heads across the DCP group
+   before the sparse kernel, but Hy4's learnable attention sinks were only gathered for shard-Q, so start-up failed
+   with "sink head count must match the runtime query layout: sinks=8, full_sinks=None, query_heads=64". The sinks are
+   now all-gathered over the DCP group in the same rank order.
+
+| 8×B300, NVFP4, FP8 KV | TP8 + DFly 5 + CPU tier | TP8 + DCP 8 (no DFly) |
+|---|---:|---:|
+| GPU KV tokens (full 1M contexts) | 3,586,880 (3.4) | 27,032,576 (25.8) |
+| Single stream decode | 130 tok/s | 53 tok/s |
+| 32 concurrent, aggregate | 1,502 tok/s | 1,064 tok/s |
+| Prefill 25K / 104K | 26.7K / 22.0K tok/s | 10.0K / 10.1K tok/s |
+| Needle (70K / 281K / 633K × 3 depths) | — | 9 / 9 |
+| MMLU-570 `no_think` | 89.65 | 88.6 |
+
+DFly stays off with DCP: its draft is TP-local and reuses the target's sparse indices, which under DCP are already
+rank-local, so acceptance falls to ~1–2 and decoding gets slower (DCP 8 + DFly 5: 49 tok/s, 739 tok/s at 32
+concurrent; output still correct because the target verifies every token). A CPU tier also adds little under DCP 8:
+the GPU pool (~1.45 TB of KV) is larger than the RAM a tier can pin on a 2 TB host.
+
+**Size the CPU tier to the host.** It is pinned at start. On a 2 TB host a 960 GiB tier
+next to ~1.2 TB of checkpoint page cache drove the kernel into memory-reclaim stalls
+(PSI "full" ~45%, multi-minute engine steps). 480 GiB plus a page-cache drop before
+start (both in `serve-hy4-big.sh`) is stable and still about 2.7× the GPU KV pool.
+
 ## Validated production configuration
 
 On 8×B300 as 4 × TP2 replicas, with `serve.sh` defaults: FP8 KV, 64-token blocks, a 400 GiB CPU tier, DFly with 3 draft tokens, 1M context, and 64 sequences.

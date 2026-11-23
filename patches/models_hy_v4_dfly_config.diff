@@ -1,0 +1,34 @@
+--- a/vllm/models/hy_v4/dfly_config.py
++++ b/vllm/models/hy_v4/dfly_config.py
+@@ -39,6 +39,7 @@
+     if config.get("quant_method") != "compressed-tensors" or quant_format not in (
+         "float-quantized",
+         "mxfp4-pack-quantized",
++        "nvfp4-pack-quantized",
+         "mixed-precision",
+     ):
+         raise ValueError(error)
+@@ -89,7 +90,22 @@
+             and all(weights.get(k) == v for k, v in expected_mxfp4_weight.items())
+             and weights.get("scale_dtype") in (None, "uint8", "torch.uint8")
+         )
+-        if not (is_fp8 or is_mxfp4):
++        _acts_ok = activations is None or (
++            isinstance(activations, dict)
++            and activations.get("num_bits") == 4
++            and activations.get("type") == "float"
++            and activations.get("strategy") == "tensor_group"
++            and activations.get("group_size") == 16
++        )
++        is_nvfp4 = (  # HY4 runtime patch: CT NVFP4 routed experts (A16 or W4A4)
++            group_format == "nvfp4-pack-quantized"
++            and weights.get("num_bits") == 4
++            and weights.get("type") == "float"
++            and weights.get("strategy") == "tensor_group"
++            and weights.get("group_size") == 16
++            and _acts_ok
++        )
++        if not (is_fp8 or is_mxfp4 or is_nvfp4):
+             raise ValueError(error)
+ 
+ 

@@ -5,6 +5,8 @@
 #  - bit-exact fused decode kernels for Hy4-flash (RMSNorm, M-RoPE, indexer, Engram)
 #  - FP8 (fp8_ds_mla) KV cache on all layers, including the sliding-window layers
 #  - CPU KV offload tier that actually retains evicted prefixes for Hy4-flash
+#  - Hy4 (big) NVFP4 routed experts: DFly accepts the compressed-tensors NVFP4 group, and NVFP4 MoE can run W4A4 with a
+#    per-token dynamic activation scale (HY4_NVFP4_PER_TOKEN=1; off by default, no effect on other checkpoints)
 # See README.md and patches/*.diff.
 
 ARG BASE=vllm/vllm-openai:nightly-f8b29fab414884206460fe63b983ca34fc6e3e9b
@@ -25,9 +27,11 @@ COPY patches/models_hy_v4_nvidia_dfly_target_reuse.py        ${VLLM_PY}/models/h
 COPY patches/v1_hisparse_binding.py                          ${VLLM_PY}/v1/hisparse/binding.py
 COPY patches/model_executor_layers_attention_mla_attention.py ${VLLM_PY}/model_executor/layers/attention/mla_attention.py
 COPY patches/distributed_kv_transfer_kv_connector_v1_offloading_state.py ${VLLM_PY}/distributed/kv_transfer/kv_connector/v1/offloading/state.py
+COPY patches/models_hy_v4_dfly_config.py                        ${VLLM_PY}/models/hy_v4/dfly_config.py
+COPY patches/model_executor_layers_quantization_compressed_tensors_compressed_tensors_moe.py ${VLLM_PY}/model_executor/layers/quantization/compressed_tensors/compressed_tensors_moe/compressed_tensors_moe.py
 
-RUN python3 -c "import vllm.models.hy_v4_flash.nvidia.model, vllm.models.hy_v4_flash.nvidia.fused_ops, vllm.models.hy_v4.nvidia.dfly_speculator, vllm.models.hy_v4.nvidia.dfly_target_reuse, vllm.v1.hisparse.binding"
+RUN python3 -c "import vllm.models.hy_v4_flash.nvidia.model, vllm.models.hy_v4_flash.nvidia.fused_ops, vllm.models.hy_v4.nvidia.dfly_speculator, vllm.models.hy_v4.nvidia.dfly_target_reuse, vllm.v1.hisparse.binding, vllm.models.hy_v4.dfly_config, vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe"
 
 LABEL org.opencontainers.image.source="https://github.com/jjang-ai/vllm-hy4-lyber"
-LABEL org.opencontainers.image.description="vLLM nightly f8b29fab + Hy4-flash decode fusions + DFly/KV-offload compatibility."
+LABEL org.opencontainers.image.description="vLLM nightly f8b29fab + Hy4-flash decode fusions + DFly/KV-offload compatibility + Hy4 (big) NVFP4."
 LABEL org.opencontainers.image.licenses="Apache-2.0"
