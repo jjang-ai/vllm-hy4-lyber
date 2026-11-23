@@ -14,12 +14,12 @@ QUANT="${QUANT---quantization compressed-tensors}"   # QUANT= for native FP8 che
 NAME="${NAME:-hy4}"
 GPUS="${GPUS:-0,1}"
 PORT="${PORT:-8000}"
-IMAGE="${IMAGE:-ghcr.io/jjang-ai/vllm-hy4-lyber:opt2}"
+IMAGE="${IMAGE:-ghcr.io/jjang-ai/vllm-hy4-lyber:opt3}"
 KV="${KV:-offload:400}"
 NSPEC="${NSPEC:-3}"            # DFly draft tokens; 0 disables DFly
 KVDTYPE="${KVDTYPE:-fp8_ds_mla}"  # KV cache dtype; auto = BF16 (about 2.6x less KV capacity)
-MAXLEN="${MAXLEN:-131072}"     # model supports up to 1048576
-MAXSEQS="${MAXSEQS:-256}"
+MAXLEN="${MAXLEN:-1048576}"    # full native context
+MAXSEQS="${MAXSEQS:-64}"      # validated per TP2 replica on B300
 HSBUF="${HSBUF:-11008}"        # HiSparse hot rows per request; >= (NSPEC+1)*2176, 256-aligned
 CACHE="${CACHE:-$HOME/.cache/vllm-hy4/$NAME}"   # keeps compiled kernels across restarts
 mkdir -p "$CACHE"
@@ -53,6 +53,7 @@ docker run -d --name "$NAME" --gpus "\"device=${GPUS}\"" --ipc=host --network ho
   --tensor-parallel-size "$TP" --gpu-memory-utilization 0.92 \
   --max-model-len "$MAXLEN" --max-num-seqs "$MAXSEQS" \
   "${KVD_FLAGS[@]}" "${SPEC_FLAGS[@]}" "${KV_FLAGS[@]}" \
+  --enable-prompt-tokens-details \
   --limit-mm-per-prompt '{"image":8,"video":0}' \
   --reasoning-parser hy_v4 --tool-call-parser hy_v4 --enable-auto-tool-choice \
   --engram-config '{"cpu_offload":false}' \

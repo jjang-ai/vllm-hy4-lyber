@@ -19,12 +19,12 @@ upstream, a plain upstream image replaces this one.
 | | |
 |---|---|
 | Base | `vllm/vllm-openai:nightly-f8b29fab414884206460fe63b983ca34fc6e3e9b` (2026-11-21) |
-| Tag | `ghcr.io/jjang-ai/vllm-hy4-lyber:opt2` |
+| Tag | `ghcr.io/jjang-ai/vllm-hy4-lyber:opt3` |
 | MoE kernel | CUTLASS MXFP4 (`CutlassExpertsMxfp4`), selected automatically |
 | Hardware | NVIDIA Blackwell (B200/B300); validated on 8×B300 as 4 × TP2 and 2 × TP4 replicas |
 
 ```bash
-docker build -t ghcr.io/jjang-ai/vllm-hy4-lyber:opt2 .
+docker build -t ghcr.io/jjang-ai/vllm-hy4-lyber:opt3 .
 ```
 
 ## Patches
@@ -129,6 +129,37 @@ alignment. Sliding-window groups then store only the tail at the prompt end, as
 the GPU cache does. The same tier holds about 21.8M tokens. With the GPU prefix
 cache cleared, a 400K-token prompt restored from CPU in 1.0 s instead of 21 s, with
 the same answer and `cached_tokens` equal to the restored prefix.
+
+
+## Validated production configuration
+
+On 8×B300 as 4 × TP2 replicas, with `serve.sh` defaults: FP8 KV, 64-token blocks, a 400 GiB CPU tier, DFly with 3 draft tokens, 1M context, and 64 sequences.
+
+| | Per TP2 replica |
+|---|---:|
+| GPU KV | 8.65M tokens (8.3 concurrent 1M-token requests) |
+| CPU tier | ~21.8M tokens |
+| Single-stream decode (DFly 3) | 186 tok/s (103 without DFly) |
+| Per-user decode at 32 / 56 users (DFly 3) | 57.9 / 25.5 tok/s (34.9 / 20.8 without) |
+
+DFly draft length: 3 tokens beat 2 tokens at every load measured. Single-stream was 186 vs 171 tok/s, and acceptance was 42% vs 52%.
+
+Prefix cache tiers, measured on a 32M-token fill of unique 400K-token prompts followed by revisits:
+
+| Prompt age | Served from | Time |
+|---|---|---|
+| Newest ~8.6M tokens | GPU | 0.7–0.8 s |
+| Next ~13M tokens | CPU tier | 0.8 s |
+| Older | Recomputed (LRU eviction) | 21 s |
+
+`prompt_tokens_details.cached_tokens` reports GPU and CPU hits alike.
+
+Other checks:
+- needle retrieval at 500K and 980K;
+- 1M-token multi-turn conversations, three running at once, with images and no repetition;
+- 8 images per request;
+- tool calls;
+- a 65,536-token stream.
 
 ## Serving
 
