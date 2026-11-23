@@ -24,13 +24,14 @@ COPY patches/models_hy_v4_nvidia_moe.py                      ${VLLM_PY}/models/h
 COPY patches/models_hy_v4_nvidia_flashmla_sparse.py          ${VLLM_PY}/models/hy_v4/nvidia/flashmla_sparse.py
 COPY patches/models_hy_v4_nvidia_dfly_speculator.py          ${VLLM_PY}/models/hy_v4/nvidia/dfly_speculator.py
 COPY patches/models_hy_v4_nvidia_dfly_target_reuse.py        ${VLLM_PY}/models/hy_v4/nvidia/dfly_target_reuse.py
+COPY patches/models_hy_v4_nvidia_dfly_inputs.py              ${VLLM_PY}/models/hy_v4/nvidia/dfly_inputs.py
 COPY patches/v1_hisparse_binding.py                          ${VLLM_PY}/v1/hisparse/binding.py
 COPY patches/model_executor_layers_attention_mla_attention.py ${VLLM_PY}/model_executor/layers/attention/mla_attention.py
 COPY patches/distributed_kv_transfer_kv_connector_v1_offloading_state.py ${VLLM_PY}/distributed/kv_transfer/kv_connector/v1/offloading/state.py
 COPY patches/models_hy_v4_dfly_config.py                        ${VLLM_PY}/models/hy_v4/dfly_config.py
 COPY patches/model_executor_layers_quantization_compressed_tensors_compressed_tensors_moe.py ${VLLM_PY}/model_executor/layers/quantization/compressed_tensors/compressed_tensors_moe/compressed_tensors_moe.py
 
-RUN python3 -c "import vllm.models.hy_v4_flash.nvidia.model, vllm.models.hy_v4_flash.nvidia.fused_ops, vllm.models.hy_v4.nvidia.dfly_speculator, vllm.models.hy_v4.nvidia.dfly_target_reuse, vllm.v1.hisparse.binding, vllm.models.hy_v4.dfly_config, vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe"
+RUN python3 -c "import vllm.models.hy_v4_flash.nvidia.model, vllm.models.hy_v4_flash.nvidia.fused_ops, vllm.models.hy_v4.nvidia.dfly_speculator, vllm.models.hy_v4.nvidia.dfly_target_reuse, vllm.models.hy_v4.nvidia.dfly_inputs, vllm.v1.hisparse.binding, vllm.models.hy_v4.dfly_config, vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors_moe.compressed_tensors_moe"
 
 LABEL org.opencontainers.image.source="https://github.com/jjang-ai/vllm-hy4-lyber"
 LABEL org.opencontainers.image.description="vLLM nightly f8b29fab + Hy4-flash decode fusions + DFly/KV-offload compatibility + Hy4 (big) NVFP4."

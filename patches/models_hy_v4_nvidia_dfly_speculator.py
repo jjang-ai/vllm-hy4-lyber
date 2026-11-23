@@ -415,17 +415,26 @@ class HYV4DFlySpeculator(DraftModelSpeculator):
         )
         if write_slots:
             assert self._slot_mappings is not None
+            tables = self.block_tables
             for gid, groups in enumerate(self.attn_groups):
                 if groups:
+                    # The draft layers write into the target's (possibly
+                    # DCP-sharded) KV pages, so use the target's slot layout.
                     write_dfly_query_slots(
                         self._slot_mappings[gid],
                         self.input_buffers.positions,
                         self.active_requests,
-                        self.block_tables.input_block_tables[gid],
-                        self.block_tables.block_sizes[gid],
+                        self.idx_mapping,
+                        tables.input_block_tables[gid],
+                        tables.num_blocks.gpu[gid],
+                        tables.block_sizes[gid],
                         self.max_model_len_gpu,
                         self.num_query_per_req,
                         padded_batch,
+                        dcp_sharded=tables.dcp_sharded[gid : gid + 1],
+                        cp_size=tables.cp_size,
+                        cp_rank=tables.cp_rank,
+                        cp_interleave=tables.cp_interleave,
                     )
         self.reuse.update_indices(
             self.active_requests, self.source_rows, self.anchors, padded_batch

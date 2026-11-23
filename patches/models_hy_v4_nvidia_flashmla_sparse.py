@@ -138,6 +138,50 @@ class HYV4FlashMLASparseImpl(FlashMLASparseImpl):
             self._sinks_full = torch.empty_like(full)
         self._sinks_full.copy_(full)
 
+    def forward_mqa(self, q, kv_c_and_k_pe_cache, attn_metadata, layer):
+        """Apply the sink once across the DCP group, not once per KV shard.
+
+        The FlashMLA kernels scale the output by exp(lse) / (exp(lse) +
+        exp(sink)) but return a sink-free LSE. Under DCP every rank attends
+        only its KV shard, so a per-rank sink is counted once per shard by the
+        cross-rank LSE merge (about +ln(DCP) on the sink logit). Instead the
+        kernels run sink-free and DCP rank 0 adds the sink as one extra
+        softmax term to both its partial output and the LSE the merge reads,
+        which makes the merged result exactly N / (Z + exp(sink)).
+        """
+        if (
+            self.sinks is None
+            or getattr(self, "dcp_world_size", 1) <= 1
+            # PCP+DCP prefill rows attend the gathered KV and need the in-kernel sink.
+            or getattr(self, "pcp_world_size", 1) > 1
+            or self.use_shardq
+        ):
+            return super().forward_mqa(q, kv_c_and_k_pe_cache, attn_metadata, layer)
+        sinks, self.sinks = self.sinks, None
+        try:
+            out, lse = super().forward_mqa(
+                q, kv_c_and_k_pe_cache, attn_metadata, layer
+            )
+        finally:
+            self.sinks = sinks
+        if lse is None:
+            raise RuntimeError("HYV4 DCP sink merge needs the decode LSE")
+        if self.dcp_rank == 0:
+            full = self._sinks_full
+            if full is None or full.shape[0] != lse.shape[1]:
+                raise ValueError(
+                    "HYV4 DCP sinks must cover the DCP-gathered query heads: "
+                    f"sinks={None if full is None else full.shape[0]}, "
+                    f"lse heads={lse.shape[1]}"
+                )
+            merged = torch.logaddexp(lse, full)
+            # Rows this rank owns no top-k slot of have (out, lse) = (0, -inf):
+            # they become (0, sink). -inf - -inf only occurs with a -inf sink.
+            scale = torch.exp(lse - merged).nan_to_num_(nan=0.0)
+            out.mul_(scale.unsqueeze(-1).to(out.dtype))
+            lse.copy_(merged)
+        return out, lse
+
     def _sinks_for_query(
         self,
         q: torch.Tensor,
